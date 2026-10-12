@@ -1,12 +1,16 @@
 //! Modbus TCP request (MBAP header + PDU). Port of `gomodbus/transport/request.go`.
 //!
 //! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP header + PDU = ADU)
+//! Note on spec refs: Section 4.1 of Modbus_Application_Protocol_V1_1b3.pdf only gives the ADU size
+//! (253-byte PDU + 7-byte MBAP = 260 bytes). The MBAP field layout (Transaction Id, Protocol Id,
+//! Length, Unit Id) is defined in the MODBUS Messaging on TCP/IP Implementation Guide, which is not
+//! bundled; "Section 4.1 (MBAP ...)" refs below point at the ADU size paragraph plus that guide.
 
 use std::io;
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    self, Error, FunctionCode, PDU, ProtocolId, Result, TCP_HEADER_LENGTH, TCP_PROTOCOL_IDENTIFIER,
+    self, Error, FunctionCode, MAX_PDU_LENGTH, PDU, ProtocolId, Result, TCP_HEADER_LENGTH, TCP_PROTOCOL_IDENTIFIER,
     TransactionId, UnitId,
 };
 
@@ -28,9 +32,13 @@ pub(crate) fn encode_adu(
     protocol_id: ProtocolId,
     unit_id: UnitId,
     pdu: &PDU,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
+    // Ref: Section 4.1 (max PDU 253 bytes / TCP ADU 260 bytes): function code (1) + data <= 253.
+    if 1 + pdu.data.len() > MAX_PDU_LENGTH {
+        return Err(Error::RequestTooLarge);
+    }
     // Ref: Section 4.1: Length field = Unit ID (1 byte) + Function Code (1 byte) + Data (N bytes)
-    // (a u16 on the wire, so it wraps exactly like Go's `uint16(...)` conversion).
+    // (a u16 on the wire; cannot overflow after the size check above).
     let length = (1 + 1 + pdu.data.len()) as u16;
 
     let mut buffer = Vec::with_capacity(TCP_HEADER_LENGTH + 1 + pdu.data.len());
@@ -45,7 +53,7 @@ pub(crate) fn encode_adu(
     // PDU. Ref: Section 4.1 (Function Code + Data)
     buffer.push(pdu.function_code.0);
     buffer.extend_from_slice(&pdu.data);
-    buffer
+    Ok(buffer)
 }
 
 /// Decoded MBAP header + PDU of an ADU (shared by request and response decoding).
@@ -176,7 +184,7 @@ impl common::Request for Request {
 
     /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header format)
     fn encode(&self) -> Result<Vec<u8>> {
-        Ok(encode_adu(self.transaction_id, self.protocol_id, self.unit_id, &self.pdu))
+        encode_adu(self.transaction_id, self.protocol_id, self.unit_id, &self.pdu)
     }
 }
 

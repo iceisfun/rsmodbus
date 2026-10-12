@@ -5,6 +5,10 @@
 //! Identifier is a 2 byte field (0..=65535) "for transaction pairing"; the server copies it
 //! into the response so the client can match them. Everything else here (free-ID queue,
 //! timeout monitor thread, locking) is implementation detail, not spec.
+//! Note on spec refs: Section 4.1 of Modbus_Application_Protocol_V1_1b3.pdf only gives the ADU size
+//! (253-byte PDU + 7-byte MBAP = 260 bytes). The MBAP field layout (Transaction Id, Protocol Id,
+//! Length, Unit Id) is defined in the MODBUS Messaging on TCP/IP Implementation Guide, which is not
+//! bundled; "Section 4.1 (MBAP ...)" refs below point at the ADU size paragraph plus that guide.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,8 +95,9 @@ impl Shared {
         let ctx = Context::background();
         let logger = self.logger();
         let mut expired = Vec::new();
+        let mut log_lines = Vec::new();
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let ids: Vec<TransactionId> = state
                 .transactions
                 .iter()
@@ -101,11 +106,16 @@ impl Shared {
                 .collect();
             for id in ids {
                 if let Some(tx) = state.transactions.get(&id).cloned() {
-                    logger.warn(&ctx, format_args!("Transaction {} timed out after {:?}", id.0, tx.get_lifetime()));
+                    log_lines.push(format!("Transaction {} timed out after {:?}", id.0, tx.get_lifetime()));
                     Self::unsafe_release(&mut state, id);
                     expired.push(tx);
                 }
             }
+        }
+        // Log after dropping the lock so a slow or panicking logger cannot stall the pool.
+        // (Implementation detail, not spec.)
+        for line in log_lines {
+            logger.warn(&ctx, format_args!("{}", line));
         }
         // Cancel the transactions with a timeout error.
         for tx in expired {
@@ -174,7 +184,7 @@ impl TransactionPool {
         let logger = self.shared.logger();
 
         let drained: Vec<(TransactionId, Arc<Transaction>)> = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             self.shared.done.store(true, Ordering::SeqCst);
             state.closed = true;
             state.free_ids.clear();
@@ -190,7 +200,7 @@ impl TransactionPool {
 
     /// Returns the current count of active transactions.
     pub fn get_count(&self) -> usize {
-        self.shared.state.lock().unwrap().transactions.len()
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).transactions.len()
     }
 
     /// Adds a transaction to the pool and assigns it a transaction ID, which is also written
@@ -205,7 +215,7 @@ impl TransactionPool {
         let tx_id;
         let tx;
         {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             // The pool may have been closed: do not hand out IDs any more.
             if state.closed {
                 return Err(Error::msg("transaction pool is closed"));
@@ -219,8 +229,6 @@ impl TransactionPool {
             // Set the transaction ID on the request
             request.set_transaction_id(tx_id);
 
-            self.shared.logger().debug(ctx, format_args!("Placing transaction with ID: {}", tx_id.0));
-
             // Create a new transaction around a snapshot of the request
             let mut snapshot = TcpRequest::new(request.get_unit_id(), request.get_pdu().function_code, request.get_pdu().data.clone());
             snapshot.transaction_id = tx_id;
@@ -229,17 +237,19 @@ impl TransactionPool {
             // Store in the pool
             state.transactions.insert(tx_id, tx.clone());
         }
+        // Logged after the lock is released (implementation detail, not spec).
+        self.shared.logger().debug(ctx, format_args!("Placing transaction with ID: {}", tx_id.0));
         Ok(tx)
     }
 
     /// Retrieves a transaction by its ID without removing it.
     pub fn get(&self, tx_id: TransactionId) -> Option<Arc<Transaction>> {
-        self.shared.state.lock().unwrap().transactions.get(&tx_id).cloned()
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).transactions.get(&tx_id).cloned()
     }
 
     /// Removes a transaction from the pool and returns it (its ID becomes free again).
     pub fn release(&self, tx_id: TransactionId) -> Option<Arc<Transaction>> {
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let result = state.transactions.get(&tx_id).cloned();
         if result.is_some() {
             Shared::unsafe_release(&mut state, tx_id);
@@ -250,7 +260,7 @@ impl TransactionPool {
     /// Like [`release`](Self::release) but only if the pooled transaction is exactly `tx`.
     /// Protects a newer transaction that reuses the ID after a reset (Rust-side hardening).
     pub fn release_tx(&self, tx_id: TransactionId, tx: &Arc<Transaction>) -> bool {
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         match state.transactions.get(&tx_id) {
             Some(cur) if Arc::ptr_eq(cur, tx) => {
                 Shared::unsafe_release(&mut state, tx_id);
@@ -266,7 +276,7 @@ impl TransactionPool {
         let ctx = Context::background();
         let logger = self.shared.logger();
         let old: Vec<(TransactionId, Arc<Transaction>)> = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             let old = state.transactions.drain().collect();
             state.free_ids = State::fresh_free_ids();
             old

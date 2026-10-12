@@ -3,6 +3,10 @@
 //! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header): the Transaction
 //! Identifier lets a client match a response to the request that caused it. The wait/complete
 //! machinery below (Mutex + Condvar instead of Go channels) is an implementation detail, not spec.
+//! Note on spec refs: Section 4.1 of Modbus_Application_Protocol_V1_1b3.pdf only gives the ADU size
+//! (253-byte PDU + 7-byte MBAP = 260 bytes). The MBAP field layout (Transaction Id, Protocol Id,
+//! Length, Unit Id) is defined in the MODBUS Messaging on TCP/IP Implementation Guide, which is not
+//! bundled; "Section 4.1 (MBAP ...)" refs below point at the ADU size paragraph plus that guide.
 
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};

@@ -2,6 +2,10 @@
 //!
 //! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP header + PDU = ADU)
 //! and Section 7 (MODBUS Exception Responses).
+//! Note on spec refs: Section 4.1 of Modbus_Application_Protocol_V1_1b3.pdf only gives the ADU size
+//! (253-byte PDU + 7-byte MBAP = 260 bytes). The MBAP field layout (Transaction Id, Protocol Id,
+//! Length, Unit Id) is defined in the MODBUS Messaging on TCP/IP Implementation Guide, which is not
+//! bundled; "Section 4.1 (MBAP ...)" refs below point at the ADU size paragraph plus that guide.
 
 use crate::common::{
     self, Error, ExceptionCode, FunctionCode, PDU, ProtocolId, Result, TCP_PROTOCOL_IDENTIFIER,
@@ -95,7 +99,7 @@ impl common::Response for Response {
 
     /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header format)
     fn encode(&self) -> Result<Vec<u8>> {
-        Ok(encode_adu(self.transaction_id, self.protocol_id, self.unit_id, &self.pdu))
+        encode_adu(self.transaction_id, self.protocol_id, self.unit_id, &self.pdu)
     }
 }
 

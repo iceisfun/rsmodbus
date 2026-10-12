@@ -1,6 +1,6 @@
 //! Modbus TCP client transport. Port of `gomodbus/transport/tcp_transport.go`.
 //!
-//! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4 (MODBUS Data Model) and Section 4.1
+//! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.5 (Define MODBUS Transaction) and Section 4.1
 //! (MBAP Header). The spec only defines the ADU framing (MBAP header + PDU) and the
 //! request/response pairing by Transaction Identifier; everything about threads, queues,
 //! deadlines and reconnect handling below is implementation detail, not spec.
@@ -21,6 +21,10 @@
 //! let t = TCPTransport::with_options("192.168.0.10", vec![with_port(502)]);
 //! t.connect(&Context::background()).unwrap();
 //! ```
+//! Note on spec refs: Section 4.1 of Modbus_Application_Protocol_V1_1b3.pdf only gives the ADU size
+//! (253-byte PDU + 7-byte MBAP = 260 bytes). The MBAP field layout (Transaction Id, Protocol Id,
+//! Length, Unit Id) is defined in the MODBUS Messaging on TCP/IP Implementation Guide, which is not
+//! bundled; "Section 4.1 (MBAP ...)" refs below point at the ADU size paragraph plus that guide.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -30,7 +34,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    Context, DEFAULT_TCP_PORT, Error, FunctionCode, LoggerInterface, Request, Response, Result,
+    Context, DEFAULT_TCP_PORT, Error, FunctionCode, LoggerInterface, MAX_PDU_LENGTH, Request, Response, Result,
     TCP_HEADER_LENGTH, TCP_PROTOCOL_IDENTIFIER, TransactionId, Transport, UnitId,
 };
 use crate::logging;
@@ -111,7 +115,7 @@ pub struct TCPTransportConfig {
 /// A function that configures a [`TCPTransport`] (Go `TCPTransportOption`).
 pub type TCPTransportOption = Box<dyn FnOnce(&mut TCPTransportConfig)>;
 
-/// Sets the TCP port (default 502, Ref: Section 4.1 / registered port 502).
+/// Sets the TCP port (default 502, Ref: Introduction: MODBUS uses reserved system port 502 on TCP/IP).
 pub fn with_port(port: u16) -> TCPTransportOption {
     Box::new(move |c| c.port = port)
 }
@@ -368,7 +372,7 @@ impl Inner {
     /// Continuously reads from the connection and completes transactions with the responses.
     /// This implements the client side of the Modbus TCP protocol.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header) and Section 4 (data model)
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header) and Section 4.5 (Define MODBUS Transaction)
     fn read_loop_body(&self, h: &Arc<ConnHandle>, ctx: &Context) {
         let logger = self.logger();
         // MBAP Header is 7 bytes: Transaction ID (2), Protocol ID (2), Length (2), Unit ID (1)
@@ -426,6 +430,33 @@ impl Inner {
             if protocol_id != TCP_PROTOCOL_IDENTIFIER {
                 logger.error(ctx, format_args!("Invalid protocol ID: {}", protocol_id.0));
                 self.process_error(transaction_id, Error::InvalidProtocolHeader);
+                // Discard the rest of this frame (Length-1 bytes) so the stream stays framed;
+                // an out-of-range Length cannot be skipped, so the connection is dropped.
+                // Implementation detail (resynchronisation), not defined by the spec.
+                let skip = (length as usize).saturating_sub(1);
+                if skip > MAX_PDU_LENGTH {
+                    self.set_disconnected(h, &Error::InvalidResponseLength);
+                    return;
+                }
+                let mut scratch = vec![0u8; skip];
+                let mut scratch_filled = 0usize;
+                while skip > 0 {
+                    match self.fill(h, &mut scratch, &mut scratch_filled) {
+                        Fill::Done => break,
+                        Fill::Timeout => {
+                            if h.is_done() {
+                                return;
+                            }
+                        }
+                        Fill::Failed(err) => {
+                            if h.is_done() {
+                                return;
+                            }
+                            self.set_disconnected(h, &err);
+                            return;
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -436,6 +467,14 @@ impl Inner {
                 logger.error(ctx, format_args!("Invalid response length: {}", length));
                 self.process_error(transaction_id, Error::InvalidResponseLength);
                 continue;
+            }
+            // Ref: Section 4.1 (PDU max 253 bytes, TCP ADU max 260 bytes => Length <= 254).
+            // The frame cannot be skipped reliably, so the connection is dropped.
+            if body_length as usize > MAX_PDU_LENGTH {
+                logger.error(ctx, format_args!("Invalid response length: {}", length));
+                self.process_error(transaction_id, Error::InvalidResponseLength);
+                self.set_disconnected(h, &Error::InvalidResponseLength);
+                return;
             }
 
             // Read the function code and data (PDU)
@@ -500,7 +539,7 @@ impl Inner {
     /// Continuously takes queued transactions and writes their requests.
     /// This implements the client side of sending Modbus TCP requests.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header) and Section 4 (data model)
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header) and Section 4.5 (Define MODBUS Transaction)
     fn write_loop_body(&self, h: &Arc<ConnHandle>, ctx: &Context) {
         let logger = self.logger();
         loop {
@@ -622,7 +661,7 @@ impl Inner {
 /// `TransportClosing` (disconnect/reset while waiting), `InvalidProtocolHeader` /
 /// `InvalidResponseLength` (malformed MBAP header of the reply), or an `Io` error.
 ///
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4 (MODBUS Data Model), Section 4.1 (MBAP Header)
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.5 (Define MODBUS Transaction), Section 4.1 (MBAP Header)
 pub struct TCPTransport {
     inner: Arc<Inner>,
 }
@@ -787,7 +826,7 @@ impl Transport for TCPTransport {
     /// request/response pattern: the pool assigns the Transaction Identifier (also written to
     /// `request`), the writer thread sends the ADU, the reader thread completes the transaction.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4 (MODBUS Data Model), Section 4.1 (MBAP Header)
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.5 (Define MODBUS Transaction), Section 4.1 (MBAP Header)
     fn send(&self, ctx: &Context, request: &mut dyn Request) -> Result<Box<dyn Response>> {
         let inner = &self.inner;
         let handle = {
