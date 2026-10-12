@@ -60,7 +60,7 @@ pub enum Error {
     DeadlineExceeded,
 
     // Protocol header errors
-    // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header)
+    // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP header is 7 bytes; field layout: MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3, outside the supplied spec)
     /// "invalid protocol header"
     InvalidProtocolHeader,
 
@@ -277,23 +277,23 @@ pub fn is_function_not_supported_error(err: &Error) -> bool {
 /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (Exception Responses)
 pub fn get_exception_string(exception_code: ExceptionCode) -> String {
     match exception_code {
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.1
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 01 (Illegal Function))
         EXCEPTION_FUNCTION_CODE_NOT_SUPPORTED => "function code not supported".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.2
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 02 (Illegal Data Address))
         EXCEPTION_DATA_ADDRESS_NOT_AVAILABLE => "data address not available".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.3
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 03 (Illegal Data Value))
         EXCEPTION_INVALID_DATA_VALUE => "invalid data value".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.4
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 04 (Server Device Failure))
         EXCEPTION_SERVER_DEVICE_FAILURE => "server device failure".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.5
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 05 (Acknowledge))
         EXCEPTION_ACKNOWLEDGE => "acknowledge".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.6
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 06 (Server Device Busy))
         EXCEPTION_SERVER_DEVICE_BUSY => "server device busy".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.8
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 08 (Memory Parity Error))
         EXCEPTION_MEMORY_PARITY_ERROR => "memory parity error".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.9
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 0A (Gateway Path Unavailable))
         EXCEPTION_GATEWAY_PATH_UNAVAILABLE => "gateway path unavailable".to_string(),
-        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7.10
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (MODBUS Exception Codes table, code 0B (Gateway Target Device Failed to Respond))
         EXCEPTION_GATEWAY_TARGET_NO_RESPONSE => "gateway target no response".to_string(),
         other => format!("unknown exception code: {:#x}", other.0),
     }

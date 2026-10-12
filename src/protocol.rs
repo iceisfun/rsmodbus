@@ -529,7 +529,7 @@ impl Protocol for ProtocolHandler {
         let ctx = Context::background();
         self.logger.debug(&ctx, format_args!("Generating read device identification request: code={}, objectID={}", read_device_id_code.0, object_id.0));
 
-        // Validate read device ID code (01..04). Ref: Section 6.21, Table 73
+        // Validate read device ID code (01..04). Ref: Section 6.21 (Request parameters: ReadDevId codes 01-04)
         if read_device_id_code < READ_DEVICE_ID_BASIC || read_device_id_code > READ_DEVICE_ID_SPECIFIC {
             self.logger.error(&ctx, format_args!("Invalid read device ID code: {}", read_device_id_code.0));
             return Err(Error::InvalidValue);
@@ -601,11 +601,11 @@ impl Protocol for ProtocolHandler {
                 return Err(Error::InvalidResponseFormat);
             }
 
-            // Object value (bytes -> string; Go's string(bytes) is byte-preserving, lossy UTF-8 here)
+            // Object value (bytes -> string; Go's string(bytes) is byte-preserving, lossy UTF-8 here; documented on DeviceIdObject)
             let object_value = String::from_utf8_lossy(&data[offset..offset + object_length as usize]).into_owned();
             offset += object_length as usize;
 
-            // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 72
+            // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (object Id list: 0x00-0x02 Basic, 0x03-0x06 Regular, 0x80-0xFF private)
             result.objects.push(DeviceIdObject { id: object_id, length: object_length, value: object_value });
         }
 

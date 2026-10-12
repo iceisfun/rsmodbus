@@ -76,7 +76,7 @@ macro_rules! numeric_display {
 int_newtype!(
     /// TransactionId is a unique identifier for a transaction.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header), Field 1
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP 7 bytes); field layout: MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3 (MBAP header), outside the supplied spec
     TransactionId,
     u16
 );
@@ -84,7 +84,7 @@ int_newtype!(
 int_newtype!(
     /// ProtocolId identifies the protocol used (0 = Modbus).
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header), Field 2
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP 7 bytes); field layout: MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3 (MBAP header), outside the supplied spec
     ProtocolId,
     u16
 );
@@ -92,7 +92,7 @@ int_newtype!(
 int_newtype!(
     /// UnitId identifies a specific device on a Modbus network.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header), Field 4
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP 7 bytes); field layout: MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3 (MBAP header), outside the supplied spec
     UnitId,
     u8
 );
@@ -168,7 +168,7 @@ int_newtype!(
 int_newtype!(
     /// ConformityLevel indicates the device's identification conformity level.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 74
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Response parameters: conformity level)
     ConformityLevel,
     u8
 );
@@ -276,16 +276,16 @@ pub const EXCEPTION_GATEWAY_TARGET_NO_RESPONSE: ExceptionCode = ExceptionCode(0x
 pub const MEI_READ_DEVICE_ID: MeiType = MeiType(0x0E);
 
 /// Requests basic device identification (stream access for objects 0x00-0x02).
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 73
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Request parameters: ReadDevId codes 01-04)
 pub const READ_DEVICE_ID_BASIC_STREAM: ReadDeviceIdCode = ReadDeviceIdCode(0x01);
 /// Requests regular device identification (stream access through UserApplicationName).
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 73
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Request parameters: ReadDevId codes 01-04)
 pub const READ_DEVICE_ID_REGULAR_STREAM: ReadDeviceIdCode = ReadDeviceIdCode(0x02);
 /// Requests extended device identification (stream access for all objects).
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 73
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Request parameters: ReadDevId codes 01-04)
 pub const READ_DEVICE_ID_EXTENDED_STREAM: ReadDeviceIdCode = ReadDeviceIdCode(0x03);
 /// Requests a specific identification object (individual access).
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 73
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Request parameters: ReadDevId codes 01-04)
 pub const READ_DEVICE_ID_SPECIFIC_OBJECT: ReadDeviceIdCode = ReadDeviceIdCode(0x04);
 
 /// Alias of [`READ_DEVICE_ID_BASIC_STREAM`] (old name kept for compatibility, as in Go).
@@ -298,7 +298,7 @@ pub const READ_DEVICE_ID_EXTENDED: ReadDeviceIdCode = READ_DEVICE_ID_EXTENDED_ST
 pub const READ_DEVICE_ID_SPECIFIC: ReadDeviceIdCode = READ_DEVICE_ID_SPECIFIC_OBJECT;
 
 // Conformity levels for device identification.
-// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 74
+// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Response parameters: conformity level)
 
 /// Basic identification (stream access only).
 pub const CONFORMITY_LEVEL_BASIC: ConformityLevel = ConformityLevel(0x01);
@@ -322,7 +322,7 @@ pub const MORE_FOLLOWS_NO: MoreFollows = MoreFollows(0x00);
 pub const MORE_FOLLOWS_YES: MoreFollows = MoreFollows(0xFF);
 
 // Device identification object IDs.
-// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 72
+// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (object Id list: 0x00-0x02 Basic, 0x03-0x06 Regular, 0x80-0xFF private)
 //
 // Objects 0x07-0x7F are reserved for future standard objects; objects
 // 0x80-0xFF are vendor-specific extended (private) objects.
@@ -346,7 +346,7 @@ pub const DEVICE_ID_USER_APP_NAME: DeviceIdObjectCode = DeviceIdObjectCode(0x06)
 // Display ("String()") implementations
 // ---------------------------------------------------------------------------
 
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 74
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Response parameters: conformity level)
 impl fmt::Display for ConformityLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -431,7 +431,7 @@ impl fmt::Display for MeiType {
     }
 }
 
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 73
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (Request parameters: ReadDevId codes 01-04)
 impl fmt::Display for ReadDeviceIdCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -444,7 +444,7 @@ impl fmt::Display for ReadDeviceIdCode {
     }
 }
 
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21, Table 72
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.21 (object Id list: 0x00-0x02 Basic, 0x03-0x06 Regular, 0x80-0xFF private)
 impl fmt::Display for DeviceIdObjectCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match *self {
@@ -456,7 +456,7 @@ impl fmt::Display for DeviceIdObjectCode {
             DEVICE_ID_MODEL_NAME => "ModelName",
             DEVICE_ID_USER_APP_NAME => "UserApplicationName",
             other => {
-                // 0x80-0xFF are vendor-specific extended objects (Table 72).
+                // 0x80-0xFF are vendor-specific extended objects (Section 6.21 object Id list).
                 if other.0 >= 0x80 {
                     return write!(f, "ExtendedObject(0x{:02X})", other.0);
                 }
@@ -486,10 +486,10 @@ impl fmt::Display for ExceptionStatus {
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (Protocol description / MBAP Header)
+// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (Protocol description; MBAP header layout in MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3)
 
 /// MBAP header length: Transaction ID (2) + Protocol ID (2) + Length (2) + Unit ID (1).
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header)
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (ADU size: MBAP 7 bytes); layout: MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3
 pub const TCP_HEADER_LENGTH: usize = 7;
 /// Maximum PDU length (256 bytes RS485 ADU - 1 unit id - 2 CRC = 253).
 /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1
@@ -516,7 +516,7 @@ pub const BYTES_PER_REGISTER: usize = 2;
 pub const BYTES_PER_INPUT_REGISTER: usize = 2;
 
 // Modbus limits.
-// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 6.x (function specific limits)
+// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Sections 6.1, 6.2, 6.3, 6.4, 6.11, 6.12, 6.17 (function specific limits)
 
 /// Maximum number of coils in Read Coils/Discrete Inputs (0x07D0). Ref: Section 6.1, 6.2
 pub const MAX_COIL_COUNT: u16 = 2000;
@@ -545,7 +545,7 @@ pub const COIL_ON_U16: u16 = 0xFF00;
 pub const COIL_OFF_U16: u16 = 0x0000;
 
 /// Standard identifier for Modbus TCP (protocol id 0).
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header, Protocol Identifier)
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, MODBUS Messaging on TCP/IP Implementation Guide, Section 3.1.3 (MBAP header, Protocol Identifier), outside the supplied spec
 pub const TCP_PROTOCOL_IDENTIFIER: ProtocolId = ProtocolId(0);
 
 /// Bit set in the function code to indicate an exception response (fc + 0x80).

@@ -46,9 +46,9 @@ impl Context {
         self.child(None)
     }
 
-    /// Child that expires after `timeout` (Go `context.WithTimeout`). Can also be cancelled.
+    /// Child that expires after `timeout` (Go `context.WithTimeout`); an overflowing timeout means no deadline. Can also be cancelled.
     pub fn with_timeout(&self, timeout: Duration) -> Context {
-        self.child(Some(Instant::now() + timeout))
+        self.child(Instant::now().checked_add(timeout))
     }
 
     /// Child that expires at `deadline` (Go `context.WithDeadline`). Can also be cancelled.
@@ -128,7 +128,8 @@ impl Context {
 
     /// Sleeps for `d`, waking early (with the ctx error) if cancelled or expired.
     pub fn sleep(&self, d: Duration) -> Result<(), Error> {
-        let end = Instant::now() + d;
+        // checked_add avoids Instant overflow panic; an unrepresentable duration sleeps until cancelled/expired.
+        let end = Instant::now().checked_add(d).unwrap_or_else(|| Instant::now() + Duration::from_secs(86400 * 365));
         loop {
             if let Some(e) = self.err() {
                 return Err(e);
