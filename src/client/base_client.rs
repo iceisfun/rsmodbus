@@ -5,7 +5,7 @@
 //! hands it to a transport (which adds the MBAP header), waits for the response
 //! and decodes it. Exception responses are turned into errors.
 //!
-//! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.4 (MODBUS Transaction state diagram,
+//! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.5 (Define MODBUS Transaction, state diagram,
 //! client side), Section 4.5 (Define MODBUS Transaction), Section 7 (MODBUS Exception Responses)
 
 use std::sync::Arc;
@@ -21,19 +21,19 @@ use crate::protocol::ProtocolHandler;
 use crate::transport;
 
 /// Timeout applied by [`BaseClient::send`] when the caller's context has no deadline.
-/// (Implementation detail, not spec. Ref for the concept: Section 4.4, "Time-out Timer"
+/// (Implementation detail, not spec. Ref for the concept: Section 7, client timeout condition
 /// on the client side.)
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// BaseClient provides common functionality for all Modbus clients.
 /// It uses a [`Transport`] for low-level communication.
 ///
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.4 / 4.5 (client side of a transaction)
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.5 (Define MODBUS Transaction) (client side of a transaction)
 pub struct BaseClient {
     logger: Arc<dyn LoggerInterface>,
     transport: Arc<dyn Transport>,
     protocol: Arc<dyn Protocol>,
-    // Ref: Section 4.1 (MBAP Header, Unit Identifier): addresses a device behind a gateway.
+    // Ref: Section 4.1 (ADU = MBAP 7 bytes + PDU); the MBAP Unit Identifier is defined in the MODBUS Messaging on TCP-IP Implementation Guide, not in this document: addresses a device behind a gateway.
     unit_id: UnitId,
 }
 
@@ -56,7 +56,7 @@ pub fn with_logger(logger: Arc<dyn LoggerInterface>) -> BaseClientOption {
 
 /// Sets the unit ID for the client (Go `WithUnitID`).
 ///
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header, Unit Identifier)
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (ADU = MBAP 7 bytes + PDU); the MBAP Unit Identifier is defined in the MODBUS Messaging on TCP-IP Implementation Guide, not in this document
 pub fn with_unit_id(unit_id: UnitId) -> BaseClientOption {
     Box::new(move |c| c.unit_id = unit_id)
 }
@@ -111,7 +111,7 @@ impl BaseClient {
     /// Fails with `Error::NotConnected` if the transport is not connected. A context without
     /// a deadline gets a 30s timeout. Exception responses are returned as `Error::Modbus`.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.4 (client sends request PDU,
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.5 (Define MODBUS Transaction) (client sends request PDU,
     /// waits for response), Section 7 (an exception response has function code | 0x80)
     pub fn send(&self, ctx: &Context, function_code: FunctionCode, data: Vec<u8>) -> Result<Box<dyn Response>> {
         if !self.is_connected() {

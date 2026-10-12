@@ -1,6 +1,6 @@
 //! TCPClient: a Modbus TCP client. Port of `gomodbus/client/tcp_client.go`.
 //!
-//! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header, "MODBUS on TCP"
+//! Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (ADU = MBAP 7 bytes + PDU; MBAP framing is in the MODBUS Messaging on TCP-IP Implementation Guide, "MODBUS on TCP"
 //! framing), Section 6 (Function codes descriptions). The client behaviour itself is in
 //! [`BaseClient`]; this type adds the TCP transport and builder-style configuration.
 
@@ -39,7 +39,7 @@ pub fn with_tcp_logger(logger: Arc<dyn LoggerInterface>) -> TCPOption {
 
 /// Sets the unit ID for the TCP client (Go `WithTCPUnitID`).
 ///
-/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP Header, Unit Identifier)
+/// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (ADU = MBAP 7 bytes + PDU); the MBAP Unit Identifier is defined in the MODBUS Messaging on TCP-IP Implementation Guide, not in this document
 pub fn with_tcp_unit_id(unit_id: UnitId) -> TCPOption {
     Box::new(move |c| c.set_unit_id(unit_id))
 }
@@ -48,7 +48,7 @@ impl TCPClient {
     /// Creates a new Modbus TCP client (Go `NewTCPClient`). `options` configure the
     /// underlying [`TCPTransport`] (port, timeout, ...). The default port is 502.
     ///
-    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MODBUS on TCP, port 502)
+    /// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Introduction, "Scope of this document" (reserved system port 502)
     pub fn new(host: &str, options: Vec<TCPTransportOption>) -> TCPClient {
         // Create the TCP transport
         let tcp_transport = Arc::new(TCPTransport::with_options(host, options));
