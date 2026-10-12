@@ -6,9 +6,13 @@
 //! `--name value`, `-name=value` and `--name=value`; bool flags accept `-name`
 //! and `-name=false`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::common::LogLevel;
+use crate::client::tcp_client::{TCPClient, with_tcp_logger, with_tcp_unit_id};
+use crate::common::{Client, LogLevel, LoggerInterface, UnitId};
+use crate::logging::Logger;
+use crate::transport::tcp_transport::{with_port, with_timeout_option, with_transport_logger};
 
 /// Parses a Go-style duration such as `5s`, `100ms`, `1m30s`, `1.5h`, `0`
 /// (Go `time.ParseDuration`; units ns, us/µs, ms, s, m, h).
@@ -279,6 +283,28 @@ impl ModbusArgs {
         let argv: Vec<String> = std::env::args().collect();
         ModbusArgs::parse(&argv[0], &argv[1..])
     }
+}
+
+/// Creates a Modbus TCP client using the command-line arguments
+/// (Go `ModbusArgs.CreateClient`): a stdout logger at the requested level.
+pub fn create_client(args: &ModbusArgs) -> Arc<dyn Client> {
+    let logger: Arc<dyn LoggerInterface> = Arc::new(Logger::new().with_level(args.log_level_id));
+    create_client_with_logger(args, logger)
+}
+
+/// Like [`create_client`] but with a caller supplied logger, used for both the
+/// transport and the client (Go `WithTransportLogger` + `WithTCPLogger`).
+pub fn create_client_with_logger(args: &ModbusArgs, logger: Arc<dyn LoggerInterface>) -> Arc<dyn Client> {
+    let client = TCPClient::new(
+        &args.ip,
+        vec![
+            with_port(args.port as u16),
+            with_timeout_option(args.timeout),
+            with_transport_logger(logger.clone()),
+        ],
+    )
+    .with_options(vec![with_tcp_logger(logger), with_tcp_unit_id(UnitId(args.unit_id as u8))]);
+    Arc::new(client)
 }
 
 #[cfg(test)]

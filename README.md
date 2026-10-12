@@ -102,6 +102,11 @@ The client (`rsmodbus::client`), server (`rsmodbus::server`) and transports
 `Transport` traits from `rsmodbus::common`; see the module docs of those
 modules for constructors and options.
 
+### Command-line programs
+
+`rsmodbus-server`, `rsmodbus-client <command>`, `rsmodbus-logger` and `rsmodbus`
+(ports of gomodbus `cmd/*`) are documented in [docs/CLI.md](docs/CLI.md).
+
 ## Testing
 
 ```bash
