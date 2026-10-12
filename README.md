@@ -97,10 +97,37 @@ logger.info(&Context::background(), format_args!("connected to {}", "127.0.0.1")
 
 ### Client and server
 
-The client (`rsmodbus::client`), server (`rsmodbus::server`) and transports
-(`rsmodbus::transport`) implement the `Client`, `Server`, `DataStore` and
-`Transport` traits from `rsmodbus::common`; see the module docs of those
-modules for constructors and options.
+```rust
+use std::sync::Arc;
+use rsmodbus::common::{Address, Client, Context, Quantity, Server, UnitId};
+use rsmodbus::client::{TCPClient, with_tcp_unit_id};
+use rsmodbus::server::{MemoryStore, TcpServer, with_server_data_store, with_server_port};
+use rsmodbus::transport::with_port;
+
+let ctx = Context::background();
+let store = Arc::new(MemoryStore::new());
+store.set_holding_register(Address(0), 0x1234);
+
+// Port 0 asks the OS for a free port; use local_addr() to find it.
+let srv = TcpServer::new("127.0.0.1", vec![with_server_port(0), with_server_data_store(store)]);
+srv.start(&ctx)?;
+let port = srv.local_addr().unwrap().port();
+
+let client = TCPClient::new("127.0.0.1", vec![with_port(port)])
+    .with_options(vec![with_tcp_unit_id(UnitId(1))]);
+client.connect(&ctx)?;
+let regs = client.read_holding_registers(&ctx, Address(0), Quantity(1))?;
+assert_eq!(regs, vec![0x1234]);
+client.disconnect(&ctx)?;
+srv.stop(&ctx)?;
+# Ok::<(), rsmodbus::common::Error>(())
+```
+
+Other pieces: `client::transport_reconnecting::ReconnectingTransport` (lazy
+redial after errors), `client::transport_direct::DirectTransport` (connect
+once), `server::tcp_server::with_on_client_connect` / `with_on_client_disconnect`
+callbacks, and custom function handlers via `Server::set_handler`. A full
+client/server round trip is in `tests/integration.rs`.
 
 ### Command-line programs
 
