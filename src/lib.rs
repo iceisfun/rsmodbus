@@ -5,3 +5,4 @@ pub mod logging;
 pub mod transport;
 pub mod client;
 pub mod server;
+pub mod cli;
