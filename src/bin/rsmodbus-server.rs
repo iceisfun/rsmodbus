@@ -79,7 +79,7 @@ fn main() {
                 store.set_input_register(Address(1000), counter);
                 store.set_input_register(Address(1001), (now & 0xFFFF) as u16);
                 store.set_holding_register(Address(2000), counter);
-                store.set_coil(Address(3000), counter % 2 == 0); // toggles every second
+                store.set_coil(Address(3000), counter.is_multiple_of(2)); // toggles every second
             }
         });
     }
