@@ -16,3 +16,4 @@ pub use response::Response;
 pub use tcp_transport::{TCPTransport, TCPTransportOption};
 pub use transaction::Transaction;
 pub use transaction_pool::{TransactionPool, TransactionPoolOption};
+pub use tcp_transport::{with_port, with_timeout_option, with_transport_logger};
