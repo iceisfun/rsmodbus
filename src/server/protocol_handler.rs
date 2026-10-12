@@ -158,6 +158,11 @@ fn store_exc(req: &dyn Request, err: &Error) -> Error {
     if *err == Error::InvalidQuantity {
         return exc(req, EXCEPTION_INVALID_DATA_VALUE);
     }
+    // Address range outside the data model -> Illegal Data Address (02)
+    // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (Exception code 02)
+    if *err == Error::InvalidAddress {
+        return exc(req, EXCEPTION_DATA_ADDRESS_NOT_AVAILABLE);
+    }
     exc(req, EXCEPTION_SERVER_DEVICE_FAILURE)
 }
 
@@ -181,12 +186,22 @@ fn be16(data: &[u8], off: usize) -> u16 {
 // "MODBUS uses a 'big-Endian' representation for addresses and data items."
 fn pack_registers(values: &[u16]) -> Vec<u8> {
     let byte_count = values.len() * 2;
+    debug_assert!(byte_count <= u8::MAX as usize, "callers must bound the register count");
     let mut out = Vec::with_capacity(1 + byte_count);
     out.push(byte_count as u8); // First byte is the byte count
     for v in values {
         out.extend_from_slice(&v.to_be_bytes());
     }
     out
+}
+
+// Packs register values, failing with Server Device Failure (04) if a DataStore returned
+// more than 125 values (Byte Count must fit one byte, Ref: Section 6.3 Response PDU).
+fn pack_registers_checked(req: &dyn Request, values: &[u16]) -> Result<Vec<u8>> {
+    if values.len() > MAX_REGISTER_COUNT as usize {
+        return Err(exc(req, EXCEPTION_SERVER_DEVICE_FAILURE));
+    }
+    Ok(pack_registers(values))
 }
 
 // Decodes `quantity` big-endian registers starting at `data[off..]`.
@@ -228,6 +243,12 @@ impl ServerProtocolHandler {
 
         // Read values from data store
         let values = read_func(ctx, address, quantity).map_err(|e| store_exc(req, &e))?;
+
+        // A misbehaving DataStore must return exactly `quantity` values (else Server Device Failure 04).
+        // Ref: Section 7 (Exception code 04)
+        if values.len() != quantity.0 as usize {
+            return Err(exc(req, EXCEPTION_SERVER_DEVICE_FAILURE));
+        }
 
         // Response PDU: Byte Count (1), Coil/Input Status (N bytes, N = ceil(quantity / 8))
         // Ref: Section 6.1/6.2 (Response PDU)
@@ -276,7 +297,7 @@ impl ServerProtocolHandler {
 
         // Response PDU: Byte Count (1) = 2 x N, Register Values (N x 2 bytes, big-endian)
         // Ref: Section 6.3/6.4 (Response PDU); Section 4.2 (Data Encoding)
-        respond(req, pack_registers(&values))
+        respond(req, pack_registers_checked(req, &values)?)
     }
 
     /// Processes a Read Coils request (FC 0x01).
@@ -506,7 +527,7 @@ impl ServerProtocolHandler {
 
         // Response PDU: Byte Count (1) = 2 x N, Read Registers Value (N x 2 bytes)
         // Ref: Section 6.17 (Response PDU)
-        respond(req, pack_registers(&read_values))
+        respond(req, pack_registers_checked(req, &read_values)?)
     }
 
     /// Processes a Read Device Identification request (FC 0x2B / MEI type 0x0E).
@@ -537,6 +558,10 @@ impl ServerProtocolHandler {
 
         // Ref: Section 6.21 (Read Device ID code: 01 basic stream, 02 regular stream,
         // 03 extended stream, 04 individual access)
+        // Ref: Section 6.21 / Section 7: a code outside 01-04 -> exception 03 (Illegal Data Value)
+        if !(1..=4).contains(&read_device_id_code.0) {
+            return Err(exc(req, EXCEPTION_INVALID_DATA_VALUE));
+        }
         if read_device_id_code == READ_DEVICE_ID_SPECIFIC_OBJECT {
             objects_to_include = vec![object_id];
         } else if read_device_id_code == READ_DEVICE_ID_REGULAR_STREAM {
@@ -574,6 +599,11 @@ impl ServerProtocolHandler {
             }
         };
 
+        // Ref: Section 6.21: individual access of an unknown Object Id -> exception 02
+        if read_device_id_code == READ_DEVICE_ID_SPECIFIC_OBJECT && object_value(object_id).is_none() {
+            return Err(exc(req, EXCEPTION_DATA_ADDRESS_NOT_AVAILABLE));
+        }
+
         let objects: Vec<DeviceIdObject> = objects_to_include
             .iter()
             .filter_map(|id| {
@@ -584,10 +614,13 @@ impl ServerProtocolHandler {
         // Response PDU (Ref: Section 6.21):
         //   MEI Type (0x0E), Read Device ID code, Conformity level, More Follows (0x00 / 0xFF),
         //   Next Object Id, Number of objects, then per object: Object Id, Object Length, Object Value
+        // Conformity level actually served: stream access of basic/regular/extended objects plus
+        // individual access (supported via code 04), hence 0x8x. Ref: Section 6.21 (Conformity Level)
+        let conformity = CONFORMITY_LEVEL_EXTENDED_INDIVIDUAL;
         let mut response_data = vec![
             MEI_READ_DEVICE_ID.0,
             read_device_id_code.0,
-            CONFORMITY_LEVEL_BASIC.0,
+            conformity.0,
             MORE_FOLLOWS_NO.0,
             0x00, // Next Object Id
             objects.len() as u8,
@@ -801,9 +834,15 @@ mod tests {
         let req = mock_req(FUNC_READ_DEVICE_IDENTIFICATION, vec![0x0E, 0x01, 0x00]);
         let resp = handler.handle_read_device_identification(&ctx(), &req, &store).unwrap();
         let d = &resp.get_pdu().data;
-        assert_eq!(&d[0..6], &[0x0E, 0x01, 0x01, 0x00, 0x00, 3]);
+        assert_eq!(&d[0..6], &[0x0E, 0x01, 0x83, 0x00, 0x00, 3]);
         assert_eq!(&d[6..8], &[0x00, 8]);
         assert_eq!(&d[8..16], b"gomodbus");
+
+        // invalid code -> exception 03; unknown object under code 04 -> exception 02
+        let req = mock_req(FUNC_READ_DEVICE_IDENTIFICATION, vec![0x0E, 0x05, 0x00]);
+        assert!(handler.handle_read_device_identification(&ctx(), &req, &store).is_err());
+        let req = mock_req(FUNC_READ_DEVICE_IDENTIFICATION, vec![0x0E, 0x04, 0x55]);
+        assert!(handler.handle_read_device_identification(&ctx(), &req, &store).is_err());
 
         // specific object
         let req = mock_req(FUNC_READ_DEVICE_IDENTIFICATION, vec![0x0E, 0x04, 0x01]);

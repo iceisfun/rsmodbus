@@ -141,12 +141,23 @@ fn sorted<V: Copy>(m: &HashMap<Address, V>) -> Vec<(Address, V)> {
     v
 }
 
-// Reads `quantity` consecutive entries starting at `address` (address wraps like Go's uint16).
-// Missing entries read as the default value (false / 0).
-fn read_range<V: Copy + Default>(m: &HashMap<Address, V>, address: Address, quantity: Quantity) -> Vec<V> {
-    (0..quantity.0)
+// Ensures `address + count` stays within the 16-bit address space (0x0000-0xFFFF).
+// Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 7 (Exception code 02: ILLEGAL DATA ADDRESS -
+// starting address and quantity together must not exceed the addressable range)
+fn check_range(address: Address, count: usize) -> Result<()> {
+    if address.0 as usize + count > 0x1_0000 {
+        return Err(Error::InvalidAddress);
+    }
+    Ok(())
+}
+
+// Reads `quantity` consecutive entries starting at `address`; the range must not wrap
+// the address space. Missing entries read as the default value (false / 0).
+fn read_range<V: Copy + Default>(m: &HashMap<Address, V>, address: Address, quantity: Quantity) -> Result<Vec<V>> {
+    check_range(address, quantity.0 as usize)?;
+    Ok((0..quantity.0)
         .map(|i| m.get(&(address + Address(i))).copied().unwrap_or_default())
-        .collect()
+        .collect())
 }
 
 impl DataStore for MemoryStore {
@@ -158,7 +169,7 @@ impl DataStore for MemoryStore {
         if quantity.0 == 0 || quantity.0 > MAX_COIL_COUNT {
             return Err(Error::InvalidQuantity);
         }
-        Ok(read_range(&read_lock(&self.tables).coils, address, quantity))
+        read_range(&read_lock(&self.tables).coils, address, quantity)
     }
 
     /// Reads discrete input values (data access for FC 0x02).
@@ -169,7 +180,7 @@ impl DataStore for MemoryStore {
         if quantity.0 == 0 || quantity.0 > MAX_COIL_COUNT {
             return Err(Error::InvalidQuantity);
         }
-        Ok(read_range(&read_lock(&self.tables).discrete_inputs, address, quantity))
+        read_range(&read_lock(&self.tables).discrete_inputs, address, quantity)
     }
 
     /// Reads holding register values (data access for FC 0x03).
@@ -180,7 +191,7 @@ impl DataStore for MemoryStore {
         if quantity.0 == 0 || quantity.0 > MAX_REGISTER_COUNT {
             return Err(Error::InvalidQuantity);
         }
-        Ok(read_range(&read_lock(&self.tables).holding_registers, address, quantity))
+        read_range(&read_lock(&self.tables).holding_registers, address, quantity)
     }
 
     /// Reads input register values (data access for FC 0x04).
@@ -191,7 +202,7 @@ impl DataStore for MemoryStore {
         if quantity.0 == 0 || quantity.0 > MAX_REGISTER_COUNT {
             return Err(Error::InvalidQuantity);
         }
-        Ok(read_range(&read_lock(&self.tables).input_registers, address, quantity))
+        read_range(&read_lock(&self.tables).input_registers, address, quantity)
     }
 
     /// Writes a single coil (data access for FC 0x05).
@@ -216,6 +227,7 @@ impl DataStore for MemoryStore {
         if values.is_empty() || values.len() > MAX_WRITE_COIL_COUNT as usize {
             return Err(Error::InvalidQuantity);
         }
+        check_range(address, values.len())?;
         let mut t = write_lock(&self.tables);
         for (i, value) in values.iter().enumerate() {
             t.coils.insert(address + Address(i as u16), *value);
@@ -231,6 +243,7 @@ impl DataStore for MemoryStore {
         if values.is_empty() || values.len() > MAX_WRITE_REGISTER_COUNT as usize {
             return Err(Error::InvalidQuantity);
         }
+        check_range(address, values.len())?;
         let mut t = write_lock(&self.tables);
         for (i, value) in values.iter().enumerate() {
             t.holding_registers.insert(address + Address(i as u16), *value);
@@ -242,6 +255,16 @@ impl DataStore for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn address_range_does_not_wrap() {
+        let store = MemoryStore::new();
+        let ctx = Context::background();
+        assert_eq!(store.read_holding_registers(&ctx, Address(0xFFFC), Quantity(10)), Err(Error::InvalidAddress));
+        assert!(store.read_holding_registers(&ctx, Address(0xFFFC), Quantity(4)).is_ok());
+        assert_eq!(store.write_multiple_registers(&ctx, Address(0xFFFF), &[1, 2]), Err(Error::InvalidAddress));
+        assert_eq!(store.write_multiple_coils(&ctx, Address(0xFFFF), &[true, true]), Err(Error::InvalidAddress));
+    }
 
     fn ctx() -> Context {
         Context::background()

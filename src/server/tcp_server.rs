@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -29,6 +30,9 @@ use crate::logging;
 // re-checking the stop flag, and the Go read deadline.
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+// Implementation detail: explicit connection thread stack size.
+const CONN_STACK_SIZE: usize = 512 * 1024;
 
 /// Client lifecycle callback (Go `func(ConnectedClient)`).
 pub type ClientCallback = Arc<dyn Fn(ConnectedClient) + Send + Sync>;
@@ -249,7 +253,7 @@ impl TcpServer {
 impl Server for TcpServer {
     /// Starts the server: binds (unless a listener was supplied) and spawns the accept thread.
     fn start(&self, ctx: &Context) -> Result<()> {
-        let (logger, address, port, stop, listener) = {
+        let (logger, address, port) = {
             let mut st = wr(&self.shared.state);
             if st.running {
                 return Err(Error::msg("server already running"));
@@ -272,18 +276,22 @@ impl Server for TcpServer {
             listener.set_nonblocking(true)?;
             let accept_listener = listener.try_clone()?;
 
-            st.running = true;
             st.stop = Arc::new(AtomicBool::new(false));
-            (st.logger.clone(), st.address.clone(), st.port, st.stop.clone(), accept_listener)
+            let stop = st.stop.clone();
+
+            // Spawn the accept thread and store its handle while still holding the state
+            // lock, so a concurrent stop() always observes the handle (implementation detail).
+            let shared = self.shared.clone();
+            let accept_ctx = ctx.clone();
+            let handle = thread::Builder::new()
+                .name("modbus-accept".into())
+                .spawn(move || accept_loop(shared, accept_listener, stop, accept_ctx))?;
+            st.accept_thread = Some(handle);
+            st.running = true;
+            (st.logger.clone(), st.address.clone(), st.port)
         };
 
         logger.info(ctx, format_args!("Modbus TCP server started on {}:{}", address, port));
-
-        // Start accepting connections
-        let shared = self.shared.clone();
-        let ctx = ctx.clone();
-        let handle = thread::spawn(move || accept_loop(shared, listener, stop, ctx));
-        wr(&self.shared.state).accept_thread = Some(handle);
         Ok(())
     }
 
@@ -399,6 +407,8 @@ fn accept_loop(shared: Arc<Shared>, listener: TcpListener, stop: Arc<AtomicBool>
         // Accepted sockets must block (the listener is non-blocking)
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+        // Implementation detail: a peer that stops reading must not block the connection thread forever.
+        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
 
         // Add client to tracked connections
         let client = Arc::new(ClientConn::new(remote_addr.clone(), SystemTime::now(), Some(stream)));
@@ -406,17 +416,38 @@ fn accept_loop(shared: Arc<Shared>, listener: TcpListener, stop: Arc<AtomicBool>
 
         let on_connect = rd(&shared.state).on_client_connect.clone();
         if let Some(cb) = on_connect {
-            cb(ConnectedClient {
-                remote_addr,
+            let snapshot = ConnectedClient {
+                remote_addr: remote_addr.clone(),
                 connected_at: client.connected_at,
                 ..Default::default()
-            });
+            };
+            // A panicking user callback must not kill the accept thread.
+            if catch_unwind(AssertUnwindSafe(|| cb(snapshot))).is_err() {
+                shared.logger().error(&ctx, format_args!("on_client_connect callback panicked for {}", remote_addr));
+            }
         }
 
         // Handle the client connection (thread-per-connection)
         let shared2 = shared.clone();
         let stop2 = stop.clone();
-        let handle = thread::spawn(move || handle_connection(shared2, client, stop2));
+        let client2 = client.clone();
+        let client3 = client.clone();
+        let spawned = thread::Builder::new()
+            .name("modbus-conn".into())
+            .stack_size(CONN_STACK_SIZE)
+            .spawn(move || handle_connection(shared2, client2, stop2));
+        let handle = match spawned {
+            Ok(h) => h,
+            Err(e) => {
+                // Thread exhaustion: drop the connection instead of killing the accept thread.
+                shared.logger().error(&ctx, format_args!("Error spawning connection thread for {}: {}", remote_addr, e));
+                wr(&shared.clients).remove(&remote_addr);
+                if let Some(conn) = &client3.conn {
+                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                }
+                continue;
+            }
+        };
         let mut threads = shared.client_threads.lock().unwrap_or_else(|e| e.into_inner());
         threads.retain(|h| !h.is_finished()); // drop handles of finished connections
         threads.push(handle);
@@ -476,11 +507,17 @@ fn handle_connection(shared: Arc<Shared>, client: Arc<ClientConn>, stop: Arc<Ato
     let remote_addr = client.remote_addr.clone();
 
     // Run the request loop, then always clean up (Go `defer`).
-    connection_loop(&shared, &client, conn, &remote_addr, &stop, &ctx);
+    // A panic in a handler/DataStore must not skip cleanup (would leave a zombie socket).
+    if catch_unwind(AssertUnwindSafe(|| connection_loop(&shared, &client, conn, &remote_addr, &stop, &ctx))).is_err() {
+        shared.logger().error(&ctx, format_args!("Panic while handling client {}", remote_addr));
+    }
 
     let on_disconnect = rd(&shared.state).on_client_disconnect.clone();
     if let Some(cb) = on_disconnect {
-        cb(client.snapshot());
+        let snapshot = client.snapshot();
+        if catch_unwind(AssertUnwindSafe(|| cb(snapshot))).is_err() {
+            shared.logger().error(&ctx, format_args!("on_client_disconnect callback panicked for {}", remote_addr));
+        }
     }
 
     // Remove client from tracked connections (unless stop() already cleared it)
@@ -536,16 +573,23 @@ fn connection_loop(shared: &Shared, client: &ClientConn, conn: &TcpStream, remot
         // Validate protocol ID (0 = MODBUS protocol)
         // Ref: Modbus_Messaging_Implementation_Guide_V1_0b.pdf, Section 3.1.1 (Protocol Identifier)
         if protocol_id != TCP_PROTOCOL_IDENTIFIER {
+            // The stream cannot be resynchronised reliably: close the connection.
             shared.logger().error(ctx, format_args!("Invalid protocol ID from {}: {}", remote_addr, protocol_id.0));
-            continue;
+            return;
         }
 
         // Read the PDU (length - 1 bytes; the unit ID is already read)
         // Ref: Modbus_Messaging_Implementation_Guide_V1_0b.pdf, Section 3.1.1 (Length field)
         let data_length = length as i64 - 1;
-        if data_length <= 0 {
+        // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (PDU max 253 bytes, so Length <= 254)
+        // Length 1 announces no PDU bytes at all, so the stream stays in sync: skip the frame.
+        if data_length == 0 {
             shared.logger().error(ctx, format_args!("Invalid data length from {}: {}", remote_addr, length));
             continue;
+        }
+        if data_length <= 0 || data_length as usize > MAX_PDU_LENGTH {
+            shared.logger().error(ctx, format_args!("Invalid data length from {}: {}", remote_addr, length));
+            return;
         }
 
         let mut data = vec![0u8; data_length as usize];
@@ -592,7 +636,9 @@ fn connection_loop(shared: &Shared, client: &ClientConn, conn: &TcpStream, remot
         match dispatch_request(shared, ctx, &request) {
             Ok(response) => {
                 // Send the response
-                send_response(shared, conn, response.as_ref());
+                if send_response(shared, conn, response.as_ref()).is_err() {
+                    return;
+                }
                 client.tx_count.fetch_add(1, Ordering::SeqCst);
             }
             // If it's a Modbus error, create an exception response
@@ -610,7 +656,9 @@ fn connection_loop(shared: &Shared, client: &ClientConn, conn: &TcpStream, remot
                     FunctionCode(function_code.0 | EXCEPTION_BIT),
                     vec![modbus_err.exception_code.0],
                 );
-                send_response(shared, conn, &exception_response);
+                if send_response(shared, conn, &exception_response).is_err() {
+                    return;
+                }
                 client.tx_count.fetch_add(1, Ordering::SeqCst);
             }
             // For other errors, log and disconnect
@@ -645,13 +693,13 @@ fn dispatch_request(shared: &Shared, ctx: &Context, request: &dyn Request) -> Re
 // and writes it to the socket.
 // Ref: Modbus_Messaging_Implementation_Guide_V1_0b.pdf, Section 3 (Message Encoding)
 // Ref: Modbus_Application_Protocol_V1_1b3.pdf, Section 4.1 (MBAP header + PDU = ADU)
-fn send_response(shared: &Shared, conn: &TcpStream, response: &dyn Response) {
+fn send_response(shared: &Shared, conn: &TcpStream, response: &dyn Response) -> std::result::Result<(), ()> {
     let ctx = Context::background();
     let data = match response.encode() {
         Ok(d) => d,
         Err(e) => {
             shared.logger().error(&ctx, format_args!("Error encoding response: {}", e));
-            return;
+            return Err(());
         }
     };
 
@@ -659,7 +707,7 @@ fn send_response(shared: &Shared, conn: &TcpStream, response: &dyn Response) {
     let mut writer = conn;
     if let Err(e) = writer.write_all(&data) {
         shared.logger().error(&ctx, format_args!("Error sending response: {}", e));
-        return;
+        return Err(());
     }
 
     shared.logger().debug(
@@ -670,6 +718,7 @@ fn send_response(shared: &Shared, conn: &TcpStream, response: &dyn Response) {
             response.get_pdu().function_code
         ),
     );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -842,10 +891,21 @@ mod tests {
     }
 
     #[test]
+    fn oversized_length_closes_connection() {
+        let (srv, addr) = started(vec![with_server_port(0), quiet()]);
+        let mut conn = TcpStream::connect(addr).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        conn.write_all(&[0, 1, 0, 0, 0xFF, 0xFF, 1]).unwrap();
+        let mut b = [0u8; 1];
+        assert_eq!(conn.read(&mut b).unwrap_or(0), 0);
+        srv.stop(&Context::background()).unwrap();
+    }
+
+    #[test]
     fn short_length_frames_are_skipped() {
         let (srv, addr) = started(vec![with_server_port(0), quiet()]);
         let mut conn = TcpStream::connect(addr).unwrap();
-        // length = 1 (no PDU): logged and skipped, like Go; next valid frame is served
+        // length = 1 (no PDU bytes follow): logged and skipped, stream stays in sync; next valid frame is served
         conn.write_all(&[0, 1, 0, 0, 0, 1, 1]).unwrap();
         let resp = roundtrip(&mut conn, 2, 1, 0x03, &[0, 0, 0, 1]);
         assert_eq!(resp[0..2], [0, 2]);
