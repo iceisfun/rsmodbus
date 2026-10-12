@@ -305,10 +305,10 @@ impl MockDataStoreInner {
         if self.fail_on_address == Some(address) {
             return Err(Error::ServerDeviceFailure);
         }
-        if let Some(q) = quantity {
-            if self.fail_on_quantity == Some(q) {
-                return Err(Error::InvalidQuantity);
-            }
+        if let Some(q) = quantity
+            && self.fail_on_quantity == Some(q)
+        {
+            return Err(Error::InvalidQuantity);
         }
         Ok(())
     }
