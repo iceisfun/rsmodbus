@@ -46,7 +46,7 @@ fn main() {
     let server = Arc::new(TcpServer::new(
         &address,
         vec![
-            with_server_port(port as u16),
+            with_server_port(rsmodbus::cli::port_or_exit(port)),
             with_server_logger(logger.clone()),
             with_server_data_store(store.clone() as Arc<dyn DataStore>),
         ],

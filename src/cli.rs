@@ -292,13 +292,30 @@ pub fn create_client(args: &ModbusArgs) -> Arc<dyn Client> {
     create_client_with_logger(args, logger)
 }
 
+/// Validate that a TCP port is within 0..=65535 (implementation detail, not
+/// spec) instead of silently wrapping with an `as u16` cast.
+pub fn validate_port(port: i64) -> Result<u16, String> {
+    u16::try_from(port).map_err(|_| format!("invalid port {}: must be in range 0-65535", port))
+}
+
+/// Exit with an error message when the port is out of range (implementation detail).
+pub fn port_or_exit(port: i64) -> u16 {
+    match validate_port(port) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(2);
+        }
+    }
+}
+
 /// Like [`create_client`] but with a caller supplied logger, used for both the
 /// transport and the client (Go `WithTransportLogger` + `WithTCPLogger`).
 pub fn create_client_with_logger(args: &ModbusArgs, logger: Arc<dyn LoggerInterface>) -> Arc<dyn Client> {
     let client = TCPClient::new(
         &args.ip,
         vec![
-            with_port(args.port as u16),
+            with_port(port_or_exit(args.port)),
             with_timeout_option(args.timeout),
             with_transport_logger(logger.clone()),
         ],
@@ -313,6 +330,13 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn validate_port_range() {
+        assert_eq!(validate_port(502), Ok(502));
+        assert!(validate_port(65536).is_err());
+        assert!(validate_port(-1).is_err());
     }
 
     #[test]
