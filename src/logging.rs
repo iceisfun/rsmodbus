@@ -41,6 +41,36 @@ impl Default for Logger {
     }
 }
 
+// Implementation detail (not spec): Go-style strconv.Quote for `%q` field values.
+fn go_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x0b' => out.push_str("\\v"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if c.is_control() || c == '\u{feff}' || c == '\u{2028}' || c == '\u{2029}' => {
+                if (c as u32) < 0x10000 {
+                    out.push_str(&format!("\\u{:04x}", c as u32));
+                } else {
+                    out.push_str(&format!("\\U{:08x}", c as u32));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 impl Logger {
     /// Creates a logger writing to stdout at `Info` level (Go `NewLogger()`).
     pub fn new() -> Logger {
@@ -90,7 +120,7 @@ impl Logger {
         if self.fields.is_empty() {
             return String::new();
         }
-        let parts: Vec<String> = self.fields.iter().map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        let parts: Vec<String> = self.fields.iter().map(|(k, v)| format!("{}={}", k, go_quote(v))).collect();
         format!(" {}", parts.join(" "))
     }
 
@@ -103,7 +133,9 @@ impl Logger {
         if let Err(e) = w.write_all(output.as_bytes()) {
             // Cannot log the error (that would loop); write directly to stderr as a last resort.
             if !self.writer_is_stderr {
-                eprintln!("ERROR: Failed to write {}: {}", what, e);
+                drop(w);
+                // Ignore stderr errors (like Go's fmt.Fprintf); eprintln! would panic.
+                let _ = writeln!(std::io::stderr(), "ERROR: Failed to write {}: {}", what, e);
             }
         }
     }
@@ -279,6 +311,13 @@ fn format_rfc3339(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn go_quote_matches_go() {
+        assert_eq!(super::go_quote("a\x01\n\"\\\x7f"), "\"a\\x01\\n\\\"\\\\\\x7f\"");
+        assert_eq!(super::go_quote("h\u{e9}llo\u{4e16}"), "\"h\u{e9}llo\u{4e16}\"");
+        assert_eq!(super::go_quote("\u{85}"), "\"\\u0085\"");
+    }
+
     use super::*;
 
     // In-memory sink for assertions.
